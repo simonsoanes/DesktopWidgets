@@ -12,6 +12,7 @@ Project home: <https://github.com/simonsoanes/DesktopWidgets>
 ![memory gauge](docs/images/memory.png)
 ![disk gauge](docs/images/disk.png)
 ![analog clock with content opacity 35%](docs/images/content-faded.png)
+![digital clock with card opacity 35% and content 100%](docs/images/card-faded.png)
 
 ## Using it
 
@@ -29,11 +30,13 @@ notification area; that tray menu is the app's only chrome.
 - **Never lost** — a widget that ends up off every monitor (unplugged display, resolution
   change) is pulled back to the nearest one on drag-end, on display changes and at startup;
   tray → *Gather widgets on primary screen* rescues them all. Second-monitor widgets stay put.
-- **Fades when idle** — widgets rest at their background opacity and brighten to their
-  foreground opacity while the mouse is over them, they are dragged, or their menu is open.
+- **Fades when idle** — the *card* rests at its background opacity and brightens to its
+  foreground opacity while the mouse is over it, it is dragged, or its menu is open. The
+  content (digits/hands) keeps its own opacity throughout, so a dim card stays readable.
 - **Right-click a widget** — switch a clock between Analog/Digital, pick the drive for a
-  Disk widget, set foreground (mouse-over), background (idle) and content (digits/hands)
-  opacity — presets 100–25 % or a custom slider each — reset its size, or close it.
+  Disk widget, set foreground card (mouse-over), background card (idle) and content
+  (digits/hands) opacity independently — presets 100–25 % or a custom slider each — reset
+  its size, or close it.
 - **Start with Windows** — tray menu toggle (per-user `Run` registry key).
 - **About** — tray menu → About Desktop Widgets: version, copyright and the full
   Apache-2.0 licence text (embedded, readable offline).

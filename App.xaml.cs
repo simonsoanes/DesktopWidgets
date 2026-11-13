@@ -28,20 +28,22 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
-        _mutex = new Mutex(true, @"Local\DesktopWidgets.SingleInstance", out bool createdNew);
-        if (!createdNew)
-        {
-            Shutdown();
-            return;
-        }
-
         _settings = AppSettings.Load();
 
         // Offscreen render mode used to verify the visuals without touching the desktop.
+        // Deliberately before the single-instance mutex so previews also work while a
+        // live instance (e.g. a debugger session) is running.
         if (e.Args.Length >= 1 && e.Args[0] == "--preview")
         {
             string dir = e.Args.Length >= 2 ? e.Args[1] : "preview";
             Dispatcher.BeginInvoke(new Action(() => RunPreview(dir)));
+            return;
+        }
+
+        _mutex = new Mutex(true, @"Local\DesktopWidgets.SingleInstance", out bool createdNew);
+        if (!createdNew)
+        {
+            Shutdown();
             return;
         }
 
@@ -287,6 +289,7 @@ public partial class App : Application
             RenderPreview(dir, "memory.png", WidgetKind.Memory, ClockMode.Digital, 200, 200, now, snapshot);
             RenderPreview(dir, "disk.png", WidgetKind.Disk, ClockMode.Digital, 200, 200, now, snapshot, WidgetWindow.DefaultDrive);
             RenderPreview(dir, "content-faded.png", WidgetKind.Clock, ClockMode.Analog, 240, 240, now, snapshot, null, 0.35);
+            RenderPreview(dir, "card-faded.png", WidgetKind.Clock, ClockMode.Digital, 320, 140, now, snapshot, null, 1.0, 0.35);
             RenderAboutPreview(dir);
         }
         catch (Exception ex)
@@ -326,10 +329,14 @@ public partial class App : Application
     }
 
     private static void RenderPreview(string dir, string file, WidgetKind kind, ClockMode mode,
-        int w, int h, DateTime now, StatsSnapshot snapshot, string? drive = null, double contentOpacity = 1.0)
+        int w, int h, DateTime now, StatsSnapshot snapshot, string? drive = null, double contentOpacity = 1.0, double cardOpacity = 1.0)
     {
         var canvas = new WidgetCanvas { Kind = kind, ClockMode = mode, Now = now, Stats = snapshot, Drive = drive, Opacity = contentOpacity };
-        var card = WidgetChrome.CreateCard(canvas);
+        var background = WidgetChrome.CreateCardBackground();
+        background.Opacity = cardOpacity;
+        var card = new System.Windows.Controls.Grid();
+        card.Children.Add(background);
+        card.Children.Add(canvas);
         card.Width = w;
         card.Height = h;
         card.Measure(new Size(w, h));

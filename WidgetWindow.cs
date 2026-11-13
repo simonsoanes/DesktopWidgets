@@ -22,6 +22,7 @@ public sealed class WidgetWindow : Window
     private readonly WidgetConfig _cfg;
     private readonly WidgetCanvas _canvas;
     private readonly Thumb _grip;
+    private readonly Border _cardBackground;
     private DispatcherTimer? _fastTimer;
     private bool _loaded;
     private bool _dragging;
@@ -55,7 +56,7 @@ public sealed class WidgetWindow : Window
         MinWidth = 90;
         MinHeight = 70;
         Title = $"Desktop Widgets - {cfg.Kind}";
-        Opacity = Math.Clamp(cfg.Opacity, 0.15, 1.0);
+        // The window itself stays fully opaque: card and content are independent layers.
         cfg.HoverOpacity = Math.Clamp(cfg.HoverOpacity, 0.15, 1.0);
         cfg.ContentOpacity = Math.Clamp(cfg.ContentOpacity, 0.15, 1.0);
 
@@ -97,7 +98,12 @@ public sealed class WidgetWindow : Window
         grid.Children.Add(_canvas);
         grid.Children.Add(_grip);
 
-        Content = WidgetChrome.CreateCard(grid);
+        _cardBackground = WidgetChrome.CreateCardBackground();
+        _cardBackground.Opacity = Math.Clamp(cfg.Opacity, 0.15, 1.0);
+        var root = new Grid();
+        root.Children.Add(_cardBackground);
+        root.Children.Add(grid);
+        Content = root;
 
         MouseLeftButtonDown += OnMouseLeftButtonDown;
         MouseRightButtonUp += OnMouseRightButtonUp;
@@ -516,8 +522,8 @@ public sealed class WidgetWindow : Window
         }
 
         var opacity = new MenuItem { Header = "Opacity" };
-        opacity.Items.Add(BuildOpacityMenu("Foreground (mouse over)", () => _cfg.HoverOpacity, v => SetOpacity(v, true)));
-        opacity.Items.Add(BuildOpacityMenu("Background (idle)", () => _cfg.Opacity, v => SetOpacity(v, false)));
+        opacity.Items.Add(BuildOpacityMenu("Foreground card (mouse over)", () => _cfg.HoverOpacity, v => SetOpacity(v, true)));
+        opacity.Items.Add(BuildOpacityMenu("Background card (idle)", () => _cfg.Opacity, v => SetOpacity(v, false)));
         opacity.Items.Add(BuildOpacityMenu("Content (digits/hands)", () => _cfg.ContentOpacity, SetContentOpacity));
         menu.Items.Add(opacity);
 
@@ -584,9 +590,10 @@ public sealed class WidgetWindow : Window
     {
         bool foreground = IsMouseOver || _dragging || _menuOpen;
         double target = Math.Clamp(foreground ? _cfg.HoverOpacity : _cfg.Opacity, 0.15, 1.0);
-        if (Math.Abs(Opacity - target) < 0.001)
+        if (Math.Abs(_cardBackground.Opacity - target) < 0.001)
             return;
-        BeginAnimation(OpacityProperty,
+        // Card layer only: the content keeps its own opacity, so a dim card stays readable.
+        _cardBackground.BeginAnimation(OpacityProperty,
             new System.Windows.Media.Animation.DoubleAnimation(target, TimeSpan.FromMilliseconds(120)));
     }
 
@@ -657,14 +664,20 @@ internal static class WidgetChrome
     internal static readonly Brush ButtonBrush = new SolidColorBrush(Color.FromRgb(0x2A, 0x31, 0x40));
     internal static readonly Brush ButtonHoverBrush = new SolidColorBrush(Color.FromRgb(0x3A, 0x41, 0x52));
 
-    public static Border CreateCard(FrameworkElement content) => new()
+    public static Border CreateCardBackground() => new()
     {
         CornerRadius = new CornerRadius(14),
         Background = new SolidColorBrush(Color.FromArgb(0xE6, 0x1C, 0x20, 0x2B)),
         BorderBrush = new SolidColorBrush(Color.FromArgb(0x28, 0xFF, 0xFF, 0xFF)),
         BorderThickness = new Thickness(1),
-        Child = content,
     };
+
+    public static Border CreateCard(FrameworkElement content)
+    {
+        var card = CreateCardBackground();
+        card.Child = content;
+        return card;
+    }
 }
 
 /// <summary>Minimal ICommand for context-menu entries.</summary>
