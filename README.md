@@ -10,18 +10,24 @@ Project home: <https://github.com/simonsoanes/DesktopWidgets>
 ![analog clock](docs/images/clock-analog.png)
 ![date](docs/images/date.png)
 ![memory gauge](docs/images/memory.png)
+![disk gauge](docs/images/disk.png)
 
 ## Using it
 
 Run `publish\DesktopWidgets.exe` (or `dotnet run`). A clock-face icon appears in the
 notification area; that tray menu is the app's only chrome.
 
-- **Add widget** — Clock (digital), Clock (analog), Date, CPU usage, GPU usage, Memory usage.
-- **Move** — drag a widget with the left mouse button.
+- **Add widget** — Clock (digital), Clock (analog), Date, CPU usage, GPU usage, Memory usage,
+  Disk space (any fixed/removable drive).
+- **Move** — drag with the left mouse button. Widgets magnetically snap to each other's
+  edges, centres and docks (8 px gap) and to screen edges (10 px threshold).
 - **Resize** — drag the grip in the widget's bottom-right corner (appears on hover).
   Everything is vector-drawn, so it stays crisp at any size.
-- **Right-click a widget** — switch a clock between Analog/Digital, set opacity
-  (100/85/70/55 %), reset its size, or close it.
+- **Never lost** — a widget that ends up off every monitor (unplugged display, resolution
+  change) is pulled back to the nearest one on drag-end, on display changes and at startup;
+  tray → *Gather widgets on primary screen* rescues them all. Second-monitor widgets stay put.
+- **Right-click a widget** — switch a clock between Analog/Digital, pick the drive for a
+  Disk widget, set opacity (presets 100–25 % or a custom slider), reset its size, or close it.
 - **Start with Windows** — tray menu toggle (per-user `Run` registry key).
 - **About** — tray menu → About Desktop Widgets: version, copyright and the full
   Apache-2.0 licence text (embedded, readable offline).
@@ -48,6 +54,7 @@ and below all application windows in the Z-order.
 | CPU | total utilisation % | `GetSystemTimes` (idle/kernel/user deltas) |
 | GPU | busiest engine utilisation % | `GPU Engine\Utilization Percentage` perf counters (WDDM 2.x); shows `N/A` where unavailable |
 | Memory | used % + `used / total GB` | `GlobalMemoryStatusEx` |
+| Disk | used % + `free / total GB free`, per drive | `DriveInfo` (fixed/removable, every 5 s) |
 
 Stats are sampled once per second on a background thread and shared by all widgets;
 analog clocks additionally redraw at ~30 fps for a smooth sweep.
@@ -56,7 +63,8 @@ analog clocks additionally redraw at ~30 fps for a smooth sweep.
 
 `%APPDATA%\DesktopWidgets\settings.json` — widget list with kind, clock mode, position,
 size and opacity, plus the start-with-Windows flag. Corrupt or missing files fall back
-to defaults; positions are clamped to the current virtual screen on restore.
+to defaults; positions are clamped to a connected monitor on restore, and the layout
+survives reboots - closing a widget from its menu is the only thing that removes it.
 
 ## Build
 

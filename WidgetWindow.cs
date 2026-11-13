@@ -1,6 +1,7 @@
 // Copyright 2026 Simon Soanes
 // SPDX-License-Identifier: Apache-2.0
 
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -23,9 +24,19 @@ public sealed class WidgetWindow : Window
     private readonly Thumb _grip;
     private DispatcherTimer? _fastTimer;
     private bool _loaded;
+    private bool _dragging;
+    private Native.POINT _dragStartCursor;
+    private double _dragStartLeft;
+    private double _dragStartTop;
+
+    /// <summary>All live widget windows, so dragging can snap against the others.</summary>
+    internal static readonly List<WidgetWindow> All = new();
 
     /// <summary>Raised (debounced by the app) whenever position/size/options change.</summary>
     public event Action? Changed;
+
+    /// <summary>Raised only when the user closes this widget from its menu - never on app shutdown.</summary>
+    public event Action? RemoveRequested;
 
     public WidgetConfig Config => _cfg;
 
@@ -43,7 +54,7 @@ public sealed class WidgetWindow : Window
         MinWidth = 90;
         MinHeight = 70;
         Title = $"Desktop Widgets - {cfg.Kind}";
-        Opacity = Math.Clamp(cfg.Opacity, 0.2, 1.0);
+        Opacity = Math.Clamp(cfg.Opacity, 0.15, 1.0);
 
         if (double.IsNaN(cfg.Width) || cfg.Width <= 0 || double.IsNaN(cfg.Height) || cfg.Height <= 0)
         {
@@ -62,7 +73,7 @@ public sealed class WidgetWindow : Window
         cfg.X = Left;
         cfg.Y = Top;
 
-        _canvas = new WidgetCanvas { Kind = cfg.Kind, ClockMode = cfg.ClockMode };
+        _canvas = new WidgetCanvas { Kind = cfg.Kind, ClockMode = cfg.ClockMode, Drive = cfg.Drive ?? DefaultDrive };
 
         _grip = new Thumb
         {
@@ -76,7 +87,7 @@ public sealed class WidgetWindow : Window
             Template = BuildGripTemplate(),
         };
         _grip.DragDelta += OnGripDrag;
-        _grip.DragCompleted += (_, _) => Changed?.Invoke();
+        _grip.DragCompleted += (_, _) => { EnsureGrabbable(); Changed?.Invoke(); };
 
         var grid = new Grid();
         grid.Children.Add(_canvas);
@@ -91,7 +102,7 @@ public sealed class WidgetWindow : Window
         LocationChanged += (_, _) => SyncGeometry();
         SizeChanged += (_, _) => SyncGeometry();
         Loaded += (_, _) => { _loaded = true; UpdateClockTimer(); };
-        Closed += (_, _) => _fastTimer?.Stop();
+        Closed += (_, _) => { _fastTimer?.Stop(); All.Remove(this); };
         StateChanged += (_, _) =>
         {
             // Win+D / Win+M try to minimise everything; a desktop widget should stay put.
@@ -99,6 +110,7 @@ public sealed class WidgetWindow : Window
                 WindowState = WindowState.Normal;
         };
 
+        All.Add(this);
         UpdateClockTimer();
     }
 
@@ -108,6 +120,8 @@ public sealed class WidgetWindow : Window
         WidgetKind.Date => new Size(280, 120),
         _ => new Size(170, 170),
     };
+
+    internal static string DefaultDrive => Path.GetPathRoot(Environment.SystemDirectory) ?? "C:\\";
 
     /// <summary>Called once a second by the app with the shared time and stats sample.</summary>
     public void Tick(DateTime now, StatsSnapshot? stats)
@@ -145,6 +159,11 @@ public sealed class WidgetWindow : Window
                 Marshal.StructureToPtr(pos, lParam, false);
                 break;
             }
+            case Native.WM_DISPLAYCHANGE:
+                // Monitor unplugged / resolution changed: never leave a widget unreachable.
+                EnsureGrabbable();
+                Changed?.Invoke();
+                break;
             case Native.WM_MOUSEACTIVATE:
                 handled = true;
                 return new IntPtr(Native.MA_NOACTIVATE); // clicking a widget must not focus it
@@ -165,8 +184,160 @@ public sealed class WidgetWindow : Window
     {
         if (e.ButtonState != MouseButtonState.Pressed || e.OriginalSource is Thumb)
             return;
-        try { DragMove(); } catch (InvalidOperationException) { /* button already released */ }
+        // Manual drag (not DragMove) so positions can be snapped while moving.
+        _dragging = true;
+        Native.GetCursorPos(out _dragStartCursor);
+        _dragStartLeft = Left;
+        _dragStartTop = Top;
+        CaptureMouse();
+        e.Handled = true;
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        if (!_dragging)
+            return;
+        Native.GetCursorPos(out var cursor);
+        double scale = VisualTreeHelper.GetDpi(this).DpiScaleX;
+        double left = _dragStartLeft + (cursor.X - _dragStartCursor.X) / scale;
+        double top = _dragStartTop + (cursor.Y - _dragStartCursor.Y) / scale;
+        SnapPosition(ref left, ref top);
+        Left = left;
+        Top = top;
+    }
+
+    protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
+    {
+        base.OnMouseLeftButtonUp(e);
+        EndDrag();
+    }
+
+    protected override void OnLostMouseCapture(MouseEventArgs e)
+    {
+        base.OnLostMouseCapture(e);
+        EndDrag();
+    }
+
+    private void EndDrag()
+    {
+        if (!_dragging)
+            return;
+        _dragging = false;
+        if (IsMouseCaptured)
+            ReleaseMouseCapture();
+        EnsureGrabbable();
         Changed?.Invoke();
+    }
+
+    // ---- magnetic snapping ----------------------------------------------
+
+    private const double SnapThreshold = 10;
+    private const double SnapGap = 8;
+
+    /// <summary>Pulls a dragged position onto nearby widget edges, docks and screen edges.</summary>
+    private void SnapPosition(ref double left, ref double top)
+    {
+        var xs = new List<double>();
+        var ys = new List<double>();
+        foreach (var other in All)
+        {
+            if (other == this)
+                continue;
+            xs.Add(other.Left);                               // left edges align
+            xs.Add(other.Left + other.Width - Width);         // right edges align
+            xs.Add(other.Left + other.Width / 2 - Width / 2); // centres align
+            xs.Add(other.Left + other.Width + SnapGap);       // dock to its right
+            xs.Add(other.Left - Width - SnapGap);             // dock to its left
+            ys.Add(other.Top);
+            ys.Add(other.Top + other.Height - Height);
+            ys.Add(other.Top + other.Height / 2 - Height / 2);
+            ys.Add(other.Top + other.Height + SnapGap);
+            ys.Add(other.Top - Height - SnapGap);
+        }
+        foreach (var wa in WorkAreasDip())
+        {
+            xs.Add(wa.Left);
+            xs.Add(wa.Right - Width);
+            ys.Add(wa.Top);
+            ys.Add(wa.Bottom - Height);
+        }
+        left = SnapAxis(left, xs);
+        top = SnapAxis(top, ys);
+    }
+
+    private static double SnapAxis(double value, List<double> candidates)
+    {
+        double best = value;
+        double bestDistance = SnapThreshold + 1;
+        foreach (double candidate in candidates)
+        {
+            double distance = Math.Abs(candidate - value);
+            if (distance <= SnapThreshold && distance < bestDistance)
+            {
+                bestDistance = distance;
+                best = candidate;
+            }
+        }
+        return best;
+    }
+
+    // ---- off-screen safety ----------------------------------------------
+
+    /// <summary>Work areas of every connected monitor, in WPF device-independent units.</summary>
+    private List<Rect> WorkAreasDip()
+    {
+        double scale = VisualTreeHelper.GetDpi(this).DpiScaleX;
+        var areas = new List<Rect>();
+        foreach (var screen in System.Windows.Forms.Screen.AllScreens)
+        {
+            var wa = screen.WorkingArea;
+            areas.Add(new Rect(wa.Left / scale, wa.Top / scale, wa.Width / scale, wa.Height / scale));
+        }
+        if (areas.Count == 0)
+            areas.Add(SystemParameters.WorkArea);
+        return areas;
+    }
+
+    /// <summary>
+    /// A widget must always stay grabbable: if it no longer overlaps any connected
+    /// monitor by a usable margin (unplugged display, resolution change), pull it back
+    /// onto the nearest one. A widget sitting on a second monitor is left alone.
+    /// </summary>
+    public void EnsureGrabbable()
+    {
+        var rect = new Rect(Left, Top, Width, Height);
+        var areas = WorkAreasDip();
+        foreach (var wa in areas)
+        {
+            var overlap = Rect.Intersect(rect, wa);
+            if (overlap.Width >= 48 && overlap.Height >= 32)
+                return; // still reachable on some monitor
+        }
+
+        Rect nearest = areas[0];
+        double best = double.MaxValue;
+        var centre = new Point(rect.Left + rect.Width / 2, rect.Top + rect.Height / 2);
+        foreach (var wa in areas)
+        {
+            var wc = new Point(wa.Left + wa.Width / 2, wa.Top + wa.Height / 2);
+            double distance = (wc - centre).LengthSquared;
+            if (distance < best)
+            {
+                best = distance;
+                nearest = wa;
+            }
+        }
+        ClampInto(nearest);
+    }
+
+    /// <summary>Tray rescue: bring this widget back onto the primary screen.</summary>
+    public void GatherToPrimary() => ClampInto(SystemParameters.WorkArea);
+
+    private void ClampInto(Rect wa)
+    {
+        Left = Math.Clamp(Left, wa.Left, Math.Max(wa.Left, wa.Right - Width));
+        Top = Math.Clamp(Top, wa.Top, Math.Max(wa.Top, wa.Bottom - Height));
     }
 
     private void OnGripDrag(object sender, DragDeltaEventArgs e)
@@ -219,17 +390,41 @@ public sealed class WidgetWindow : Window
             menu.Items.Add(new Separator());
         }
 
+        if (_cfg.Kind == WidgetKind.Disk)
+        {
+            var drives = new MenuItem { Header = "Drive" };
+            foreach (var drive in DriveInfo.GetDrives())
+            {
+                if (drive.DriveType is not (DriveType.Fixed or DriveType.Removable) || !drive.IsReady)
+                    continue;
+                string root = drive.Name;
+                string label;
+                try { label = drive.VolumeLabel; } catch { label = ""; }
+                string header = string.IsNullOrEmpty(label) ? root : $"{root} {label}";
+                drives.Items.Add(MakeChoice(header,
+                    string.Equals(_cfg.Drive ?? DefaultDrive, root, StringComparison.OrdinalIgnoreCase), () =>
+                    {
+                        _cfg.Drive = root;
+                        _canvas.Drive = root;
+                        Changed?.Invoke();
+                    }));
+            }
+            menu.Items.Add(drives);
+            menu.Items.Add(new Separator());
+        }
+
         var opacity = new MenuItem { Header = "Opacity" };
-        foreach (int pct in new[] { 100, 85, 70, 55 })
+        foreach (int pct in new[] { 100, 85, 70, 55, 40, 25 })
         {
             double value = pct / 100.0;
-            opacity.Items.Add(MakeChoice($"{pct}%", Math.Abs(_cfg.Opacity - value) < 0.01, () =>
-            {
-                _cfg.Opacity = value;
-                Opacity = value;
-                Changed?.Invoke();
-            }));
+            opacity.Items.Add(MakeChoice($"{pct}%", Math.Abs(_cfg.Opacity - value) < 0.01, () => SetOpacity(value)));
         }
+        opacity.Items.Add(new Separator());
+        opacity.Items.Add(new MenuItem
+        {
+            Header = "Custom...",
+            Command = new RelayCommand(() => new OpacityDialog(_cfg.Opacity, SetOpacity).Show()),
+        });
         menu.Items.Add(opacity);
 
         menu.Items.Add(new MenuItem
@@ -243,11 +438,19 @@ public sealed class WidgetWindow : Window
             }),
         });
         menu.Items.Add(new Separator());
-        menu.Items.Add(new MenuItem { Header = "Close widget", Command = new RelayCommand(Close) });
+        menu.Items.Add(new MenuItem { Header = "Close widget", Command = new RelayCommand(() => { RemoveRequested?.Invoke(); Close(); }) });
 
         menu.PlacementTarget = this;
         menu.Placement = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
         menu.IsOpen = true;
+    }
+
+    private void SetOpacity(double value)
+    {
+        value = Math.Clamp(value, 0.15, 1.0);
+        _cfg.Opacity = value;
+        Opacity = value;
+        Changed?.Invoke();
     }
 
     private void SetClockMode(ClockMode mode)

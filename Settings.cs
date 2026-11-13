@@ -17,6 +17,8 @@ public sealed class WidgetConfig
     public double Width { get; set; }
     public double Height { get; set; }
     public double Opacity { get; set; } = 0.95;
+    /// <summary>Drive root for Disk widgets (e.g. "C:\\"); null means the system drive.</summary>
+    public string? Drive { get; set; }
 }
 
 public sealed class AppSettings

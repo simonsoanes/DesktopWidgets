@@ -50,6 +50,8 @@ public partial class App : Application
         _tray.StartWithWindowsChanged += SetStartWithWindows;
         _tray.ExitRequested += ExitApp;
         _tray.AboutRequested += ShowAbout;
+        _tray.GatherRequested += GatherWidgets;
+        SessionEnding += (_, _) => SaveSettings(); // reboot: persist before the windows close
 
         if (_settings.Widgets.Count == 0)
             SeedFirstRun();
@@ -72,14 +74,18 @@ public partial class App : Application
     {
         var window = new WidgetWindow(cfg);
         window.Changed += ScheduleSave;
-        window.Closed += (_, _) =>
+        // Only an explicit user close removes a widget from the saved layout. Window.Closed
+        // also fires for every widget during shutdown/reboot - deleting configs there wiped
+        // the whole layout on every exit.
+        window.RemoveRequested += () =>
         {
-            _windows.Remove(window);
             _settings.Widgets.Remove(cfg);
             SaveSettings();
         };
+        window.Closed += (_, _) => _windows.Remove(window);
         _windows.Add(window);
         window.Show();
+        window.EnsureGrabbable();
         window.Tick(DateTime.Now, _lastStats);
     }
 
@@ -92,6 +98,7 @@ public partial class App : Application
         {
             Kind = kind,
             ClockMode = mode,
+            Drive = kind == WidgetKind.Disk ? WidgetWindow.DefaultDrive : null,
             Width = def.Width,
             Height = def.Height,
             X = wa.Left + wa.Width / 2 - def.Width / 2 + offset,
@@ -142,6 +149,13 @@ public partial class App : Application
             });
             x += def.Width + gap;
         }
+    }
+
+    private void GatherWidgets()
+    {
+        foreach (var window in _windows)
+            window.GatherToPrimary();
+        SaveSettings();
     }
 
     private void ShowAbout()
@@ -230,6 +244,8 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        if (_tray != null)
+            SaveSettings();
         _stats.Dispose();
         _mutex?.Dispose();
         base.OnExit(e);
@@ -250,7 +266,8 @@ public partial class App : Application
             File.WriteAllText(Path.Combine(dir, "stats.txt"),
                 $"CPU: {snapshot.CpuPercent:F1}%\n" +
                 $"GPU: {(snapshot.GpuPercent.HasValue ? snapshot.GpuPercent.Value.ToString("F1") + "%" : "unavailable")}\n" +
-                $"Memory: {snapshot.MemoryPercent:F1}% ({snapshot.MemoryUsedGB:F1} / {snapshot.MemoryTotalGB:F1} GB)\n");
+                $"Memory: {snapshot.MemoryPercent:F1}% ({snapshot.MemoryUsedGB:F1} / {snapshot.MemoryTotalGB:F1} GB)\n" +
+                $"Disk {WidgetWindow.DefaultDrive}: {(snapshot.Disks.TryGetValue(WidgetWindow.DefaultDrive, out var disk) && disk.Ready ? $"{disk.UsedPercent:F1}% used ({disk.FreeGB:F1} / {disk.TotalGB:F0} GB free)" : "unavailable")}\n");
 
             var now = DateTime.Now;
             RenderPreview(dir, "clock-digital.png", WidgetKind.Clock, ClockMode.Digital, 320, 140, now, snapshot);
@@ -259,6 +276,7 @@ public partial class App : Application
             RenderPreview(dir, "cpu.png", WidgetKind.Cpu, ClockMode.Digital, 200, 200, now, snapshot);
             RenderPreview(dir, "gpu.png", WidgetKind.Gpu, ClockMode.Digital, 200, 200, now, snapshot);
             RenderPreview(dir, "memory.png", WidgetKind.Memory, ClockMode.Digital, 200, 200, now, snapshot);
+            RenderPreview(dir, "disk.png", WidgetKind.Disk, ClockMode.Digital, 200, 200, now, snapshot, WidgetWindow.DefaultDrive);
             RenderAboutPreview(dir);
         }
         catch (Exception ex)
@@ -298,9 +316,9 @@ public partial class App : Application
     }
 
     private static void RenderPreview(string dir, string file, WidgetKind kind, ClockMode mode,
-        int w, int h, DateTime now, StatsSnapshot snapshot)
+        int w, int h, DateTime now, StatsSnapshot snapshot, string? drive = null)
     {
-        var canvas = new WidgetCanvas { Kind = kind, ClockMode = mode, Now = now, Stats = snapshot };
+        var canvas = new WidgetCanvas { Kind = kind, ClockMode = mode, Now = now, Stats = snapshot, Drive = drive };
         var card = WidgetChrome.CreateCard(canvas);
         card.Width = w;
         card.Height = h;

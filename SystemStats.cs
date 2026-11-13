@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 using System.Diagnostics;
+using System.IO;
 
 namespace DesktopWidgets;
 
@@ -11,7 +12,11 @@ public sealed record StatsSnapshot(
     double? GpuPercent,
     double MemoryPercent,
     double MemoryUsedGB,
-    double MemoryTotalGB);
+    double MemoryTotalGB,
+    IReadOnlyDictionary<string, DiskSample> Disks);
+
+/// <summary>One drive's capacity sample; Ready=false when the volume is absent (card reader, unplugged USB).</summary>
+public sealed record DiskSample(double UsedPercent, double FreeGB, double TotalGB, bool Ready);
 
 /// <summary>
 /// Samples CPU (GetSystemTimes), physical memory (GlobalMemoryStatusEx) and GPU
@@ -30,12 +35,20 @@ public sealed class SystemStats : IDisposable
     private bool _gpuChecked;
     private bool _gpuAvailable;
 
+    private Dictionary<string, DiskSample> _disks = new(StringComparer.OrdinalIgnoreCase);
+    private int _ticksSinceDiskRefresh = 5; // force a refresh on first sample (int.MaxValue would overflow)
+
     public StatsSnapshot Sample()
     {
         double cpu = SampleCpu();
         (double memPercent, double usedGB, double totalGB) = SampleMemory();
         double? gpu = SampleGpu();
-        return new StatsSnapshot(cpu, gpu, memPercent, usedGB, totalGB);
+        if (++_ticksSinceDiskRefresh >= 5)
+        {
+            _ticksSinceDiskRefresh = 0;
+            _disks = SampleDisks();
+        }
+        return new StatsSnapshot(cpu, gpu, memPercent, usedGB, totalGB, _disks);
     }
 
     private double SampleCpu()
@@ -149,6 +162,42 @@ public sealed class SystemStats : IDisposable
         }
 
         _gpuCounters = counters;
+    }
+
+    private static Dictionary<string, DiskSample> SampleDisks()
+    {
+        const double gb = 1024.0 * 1024.0 * 1024.0;
+        var disks = new Dictionary<string, DiskSample>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            foreach (var drive in DriveInfo.GetDrives())
+            {
+                if (drive.DriveType is not (DriveType.Fixed or DriveType.Removable))
+                    continue;
+                try
+                {
+                    if (!drive.IsReady)
+                    {
+                        disks[drive.Name] = new DiskSample(0, 0, 0, false);
+                        continue;
+                    }
+                    double total = drive.TotalSize / gb;
+                    double free = drive.TotalFreeSpace / gb;
+                    double used = total > 0 ? (total - free) / total * 100.0 : 0;
+                    disks[drive.Name] = new DiskSample(Math.Clamp(used, 0, 100), free, total, true);
+                }
+                catch
+                {
+                    // Volume vanished mid-sample - report it as unavailable.
+                    disks[drive.Name] = new DiskSample(0, 0, 0, false);
+                }
+            }
+        }
+        catch
+        {
+            // Drive enumeration can fail during device churn; keep the previous sample.
+        }
+        return disks;
     }
 
     private void DisposeGpuCounters()

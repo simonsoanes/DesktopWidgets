@@ -7,7 +7,7 @@ using System.Windows.Media;
 
 namespace DesktopWidgets;
 
-public enum WidgetKind { Clock, Date, Cpu, Gpu, Memory }
+public enum WidgetKind { Clock, Date, Cpu, Gpu, Memory, Disk }
 public enum ClockMode { Digital, Analog }
 
 /// <summary>
@@ -45,6 +45,15 @@ public sealed class WidgetCanvas : FrameworkElement
         set { _stats = value; InvalidateVisual(); }
     }
 
+    private string? _drive;
+
+    /// <summary>Drive root shown by a Disk widget (e.g. "C:\\").</summary>
+    public string? Drive
+    {
+        get => _drive;
+        set { _drive = value; InvalidateVisual(); }
+    }
+
     // ---- palette -------------------------------------------------------
 
     private static readonly Brush TextBrush = Frozen(new SolidColorBrush(Color.FromRgb(0xF2, 0xF4, 0xF8)));
@@ -56,6 +65,7 @@ public sealed class WidgetCanvas : FrameworkElement
     private static readonly Brush CpuBrush = Frozen(new SolidColorBrush(Color.FromRgb(0x4C, 0xC2, 0xFF)));
     private static readonly Brush GpuBrush = Frozen(new SolidColorBrush(Color.FromRgb(0x7E, 0xE7, 0x87)));
     private static readonly Brush MemoryBrush = Frozen(new SolidColorBrush(Color.FromRgb(0xD2, 0xA8, 0xFF)));
+    private static readonly Brush DiskBrush = Frozen(new SolidColorBrush(Color.FromRgb(0xFF, 0xB4, 0x54)));
 
     private static T Frozen<T>(T freezable) where T : System.Windows.Freezable
     {
@@ -68,6 +78,7 @@ public sealed class WidgetCanvas : FrameworkElement
         WidgetKind.Cpu => CpuBrush,
         WidgetKind.Gpu => GpuBrush,
         WidgetKind.Memory => MemoryBrush,
+        WidgetKind.Disk => DiskBrush,
         _ => AccentBrush,
     };
 
@@ -181,6 +192,7 @@ public sealed class WidgetCanvas : FrameworkElement
             WidgetKind.Gpu => (Stats?.GpuPercent ?? 0, Stats?.GpuPercent != null, null),
             WidgetKind.Memory => (Stats?.MemoryPercent ?? 0, Stats != null,
                 Stats != null ? $"{Stats.MemoryUsedGB:F1} / {Stats.MemoryTotalGB:F0} GB" : null),
+            WidgetKind.Disk => DiskValues(),
             _ => (0, false, null),
         };
 
@@ -221,10 +233,19 @@ public sealed class WidgetCanvas : FrameworkElement
             WidgetKind.Cpu => "CPU",
             WidgetKind.Gpu => "GPU",
             WidgetKind.Memory => "MEMORY",
+            WidgetKind.Disk => $"DISK {(Drive ?? "C:\\").TrimEnd('\\')}",
             _ => "",
         };
         var ftLabel = FitText(label, w - 2 * pad, labelH, FontWeights.SemiBold, DimBrush);
         DrawCentered(dc, ftLabel, w / 2, h - pad / 2 - labelH / 2);
+    }
+
+    private (double percent, bool available, string? subLabel) DiskValues()
+    {
+        string root = Drive ?? "C:\\";
+        if (Stats != null && Stats.Disks.TryGetValue(root, out var disk) && disk.Ready)
+            return (disk.UsedPercent, true, $"{disk.FreeGB:F1} / {disk.TotalGB:F0} GB free");
+        return (0, false, null);
     }
 
     // ---- helpers -------------------------------------------------------

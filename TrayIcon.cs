@@ -22,6 +22,7 @@ public sealed class TrayIcon : IDisposable
 
     public event Action<WidgetKind, ClockMode>? AddWidgetRequested;
     public event Action<bool>? StartWithWindowsChanged;
+    public event Action? GatherRequested;
     public event Action? AboutRequested;
     public event Action? ExitRequested;
 
@@ -40,7 +41,9 @@ public sealed class TrayIcon : IDisposable
         add.DropDownItems.Add("CPU usage", null, (_, _) => AddWidgetRequested?.Invoke(WidgetKind.Cpu, ClockMode.Digital));
         add.DropDownItems.Add("GPU usage", null, (_, _) => AddWidgetRequested?.Invoke(WidgetKind.Gpu, ClockMode.Digital));
         add.DropDownItems.Add("Memory usage", null, (_, _) => AddWidgetRequested?.Invoke(WidgetKind.Memory, ClockMode.Digital));
+        add.DropDownItems.Add("Disk space", null, (_, _) => AddWidgetRequested?.Invoke(WidgetKind.Disk, ClockMode.Digital));
         menu.Items.Add(add);
+        menu.Items.Add("Gather widgets on primary screen", null, (_, _) => GatherRequested?.Invoke());
         menu.Items.Add(new ToolStripSeparator());
 
         _startItem = new ToolStripMenuItem("Start with Windows")
