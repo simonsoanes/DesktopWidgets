@@ -52,7 +52,7 @@ and below all application windows in the Z-order.
 | Clock | `HH:mm:ss`, or analog face with sweeping second hand | system time |
 | Date | weekday + full date, current culture | system time |
 | CPU | total utilisation % | `GetSystemTimes` (idle/kernel/user deltas) |
-| GPU | busiest engine utilisation % | `GPU Engine\Utilization Percentage` perf counters (WDDM 2.x); shows `N/A` where unavailable |
+| GPU | busiest engine utilisation % | `GPU Engine` PDH wildcard query, one collect per sample (WDDM 2.x); `N/A` where unavailable |
 | Memory | used % + `used / total GB` | `GlobalMemoryStatusEx` |
 | Disk | used % + `free / total GB free`, per drive | `DriveInfo` (fixed/removable, every 5 s) |
 
@@ -108,8 +108,9 @@ One WPF project, no third-party packages:
   clock face/hands, 270° gauges); resolution-independent.
 - `WidgetWindow.cs` — transparent borderless host: always-behind interop, drag, grip
   resize, right-click menu; `WidgetChrome` draws the shared translucent card.
-- `SystemStats.cs` — CPU/GPU/memory sampling (GPU counters refreshed every 10 s,
-  stale instances tolerated).
+- `SystemStats.cs` — demand-driven sampling: only metrics some live widget displays are
+  sampled at all (a clock-only layout does none); GPU uses a single PDH wildcard collect
+  per tick instead of per-instance counters.
 - `App.xaml.cs` — single-instance mutex, tray wiring, 1 Hz shared tick, debounced
   settings persistence, first-run layout, `--preview` mode.
 - `TrayIcon.cs` — notification-area icon (generated at runtime) and menu.

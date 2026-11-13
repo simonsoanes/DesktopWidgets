@@ -1,8 +1,8 @@
 // Copyright 2026 Simon Soanes
 // SPDX-License-Identifier: Apache-2.0
 
-using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 
 namespace DesktopWidgets;
 
@@ -18,6 +18,9 @@ public sealed record StatsSnapshot(
 /// <summary>One drive's capacity sample; Ready=false when the volume is absent (card reader, unplugged USB).</summary>
 public sealed record DiskSample(double UsedPercent, double FreeGB, double TotalGB, bool Ready);
 
+/// <summary>Which metrics the live widgets actually need; everything else is not sampled at all.</summary>
+public readonly record struct StatsNeeds(bool Cpu, bool Gpu, bool Memory, bool Disk);
+
 /// <summary>
 /// Samples CPU (GetSystemTimes), physical memory (GlobalMemoryStatusEx) and GPU
 /// (the "GPU Engine" performance counters that ship with WDDM 2.x drivers).
@@ -30,25 +33,45 @@ public sealed class SystemStats : IDisposable
     private bool _hasPrev;
 
     private readonly object _gpuLock = new();
-    private Dictionary<string, PerformanceCounter>? _gpuCounters;
-    private int _ticksSinceGpuRefresh = int.MaxValue; // force a refresh on first sample
-    private bool _gpuChecked;
-    private bool _gpuAvailable;
+    private IntPtr _pdhQuery;
+    private IntPtr _pdhCounter;
+    private int _gpuRetryTicks;
 
     private Dictionary<string, DiskSample> _disks = new(StringComparer.OrdinalIgnoreCase);
     private int _ticksSinceDiskRefresh = 5; // force a refresh on first sample (int.MaxValue would overflow)
+    private static readonly Dictionary<string, DiskSample> EmptyDisks = new(StringComparer.OrdinalIgnoreCase);
 
-    public StatsSnapshot Sample()
+    /// <summary>Samples everything (used by the offscreen preview).</summary>
+    public StatsSnapshot Sample() => Sample(new StatsNeeds(true, true, true, true));
+
+    /// <summary>Samples only the metrics some live widget actually displays.</summary>
+    public StatsSnapshot Sample(StatsNeeds needs)
     {
-        double cpu = SampleCpu();
-        (double memPercent, double usedGB, double totalGB) = SampleMemory();
-        double? gpu = SampleGpu();
-        if (++_ticksSinceDiskRefresh >= 5)
+        double cpu = 0;
+        if (needs.Cpu)
+            cpu = SampleCpu();
+        else
+            _hasPrev = false; // re-prime the delta when a CPU widget appears
+
+        (double memPercent, double usedGB, double totalGB) = needs.Memory ? SampleMemory() : (0, 0, 0);
+
+        double? gpu = null;
+        if (needs.Gpu)
+            gpu = SampleGpu();
+        else
+            lock (_gpuLock) { DisposeGpu(); } // release the PDH query when no GPU widget remains
+
+        Dictionary<string, DiskSample> disks = EmptyDisks;
+        if (needs.Disk)
         {
-            _ticksSinceDiskRefresh = 0;
-            _disks = SampleDisks();
+            if (++_ticksSinceDiskRefresh >= 5)
+            {
+                _ticksSinceDiskRefresh = 0;
+                _disks = SampleDisks();
+            }
+            disks = _disks;
         }
-        return new StatsSnapshot(cpu, gpu, memPercent, usedGB, totalGB, _disks);
+        return new StatsSnapshot(cpu, gpu, memPercent, usedGB, totalGB, disks);
     }
 
     private double SampleCpu()
@@ -91,77 +114,83 @@ public sealed class SystemStats : IDisposable
     {
         lock (_gpuLock)
         {
-            if (!_gpuChecked)
+            if (_pdhQuery == IntPtr.Zero)
             {
-                _gpuChecked = true;
-                try { _gpuAvailable = PerformanceCounterCategory.Exists("GPU Engine"); }
-                catch { _gpuAvailable = false; }
+                if (_gpuRetryTicks > 0)
+                {
+                    _gpuRetryTicks--;
+                    return null;
+                }
+                if (!OpenGpuQuery())
+                {
+                    _gpuRetryTicks = 30; // category absent (no WDDM 2.x driver): retry occasionally
+                    return null;
+                }
             }
 
-            if (!_gpuAvailable)
+            // One collect refreshes every instance of the wildcard query. The old
+            // per-counter NextValue() loop is what burned a whole core on busy machines.
+            if (Native.PdhCollectQueryData(_pdhQuery) != 0)
+            {
+                DisposeGpu();
+                _gpuRetryTicks = 10;
                 return null;
+            }
 
+            uint bufferSize = 0, itemCount = 0;
+            uint status = Native.PdhGetFormattedCounterArrayW(_pdhCounter, Native.PDH_FMT_DOUBLE, ref bufferSize, ref itemCount, IntPtr.Zero);
+            if (status != Native.PDH_MORE_DATA || bufferSize == 0)
+                return 0;
+
+            IntPtr buffer = Marshal.AllocHGlobal((int)bufferSize);
             try
             {
-                if (_gpuCounters == null || ++_ticksSinceGpuRefresh >= 10)
-                    RefreshGpuCounters();
-
-                if (_gpuCounters == null || _gpuCounters.Count == 0)
+                status = Native.PdhGetFormattedCounterArrayW(_pdhCounter, Native.PDH_FMT_DOUBLE, ref bufferSize, ref itemCount, buffer);
+                if (status != 0)
                     return 0;
 
                 // Instances are per-process, per-engine ("..._engtype_3D", "..._engtype_VideoDecode", ...).
                 // Sum each engine type, then report the busiest one - the same idea Task Manager uses.
                 var perEngine = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
-                foreach (var (instance, counter) in _gpuCounters)
+                int stride = Marshal.SizeOf<Native.PDH_FMT_COUNTERVALUE_ITEM_W>();
+                for (int i = 0; i < itemCount; i++)
                 {
-                    double value;
-                    try { value = counter.NextValue(); }
-                    catch { continue; } // process exited; instance is stale until the next refresh
-
-                    int idx = instance.LastIndexOf("engtype_", StringComparison.OrdinalIgnoreCase);
-                    string engine = idx >= 0 ? instance[(idx + 8)..] : "other";
-                    perEngine[engine] = perEngine.TryGetValue(engine, out var sum) ? sum + value : value;
+                    var item = Marshal.PtrToStructure<Native.PDH_FMT_COUNTERVALUE_ITEM_W>(buffer + i * stride);
+                    if (item.FmtValue.CStatus != 0)
+                        continue; // stale instance (process exited)
+                    string name = Marshal.PtrToStringUni(item.szName) ?? "";
+                    int idx = name.LastIndexOf("engtype_", StringComparison.OrdinalIgnoreCase);
+                    string engine = idx >= 0 ? name[(idx + 8)..] : "other";
+                    perEngine[engine] = perEngine.TryGetValue(engine, out var sum) ? sum + item.FmtValue.dblValue : item.FmtValue.dblValue;
                 }
 
                 if (perEngine.Count == 0)
                     return 0;
-
                 return Math.Clamp(perEngine.Values.Max(), 0, 100);
             }
-            catch
+            finally
             {
-                // Counters can disappear after a driver reset; retry from scratch next time.
-                DisposeGpuCounters();
-                _ticksSinceGpuRefresh = int.MaxValue;
-                return null;
+                Marshal.FreeHGlobal(buffer);
             }
         }
     }
 
-    private void RefreshGpuCounters()
+    private bool OpenGpuQuery()
     {
-        DisposeGpuCounters();
-        _ticksSinceGpuRefresh = 0;
-
-        var category = new PerformanceCounterCategory("GPU Engine");
-        var counters = new Dictionary<string, PerformanceCounter>(StringComparer.OrdinalIgnoreCase);
-        foreach (string instance in category.GetInstanceNames())
+        if (Native.PdhOpenQuery(null, IntPtr.Zero, out _pdhQuery) != 0)
         {
-            if (!instance.Contains("engtype_", StringComparison.OrdinalIgnoreCase))
-                continue;
-            try
-            {
-                var counter = new PerformanceCounter("GPU Engine", "Utilization Percentage", instance, readOnly: true);
-                counter.NextValue(); // prime: the first raw sample is always 0
-                counters[instance] = counter;
-            }
-            catch
-            {
-                // Instance vanished between enumeration and creation - ignore it.
-            }
+            _pdhQuery = IntPtr.Zero;
+            return false;
         }
-
-        _gpuCounters = counters;
+        if (Native.PdhAddEnglishCounterW(_pdhQuery, "\\GPU Engine(*)\\Utilization Percentage", IntPtr.Zero, out _pdhCounter) != 0)
+        {
+            Native.PdhCloseQuery(_pdhQuery);
+            _pdhQuery = IntPtr.Zero;
+            _pdhCounter = IntPtr.Zero;
+            return false;
+        }
+        Native.PdhCollectQueryData(_pdhQuery); // prime the wildcard instance list
+        return true;
     }
 
     private static Dictionary<string, DiskSample> SampleDisks()
@@ -200,22 +229,21 @@ public sealed class SystemStats : IDisposable
         return disks;
     }
 
-    private void DisposeGpuCounters()
+    private void DisposeGpu()
     {
-        if (_gpuCounters == null)
-            return;
-        foreach (var counter in _gpuCounters.Values)
+        if (_pdhQuery != IntPtr.Zero)
         {
-            try { counter.Dispose(); } catch { /* ignore */ }
+            Native.PdhCloseQuery(_pdhQuery);
+            _pdhQuery = IntPtr.Zero;
+            _pdhCounter = IntPtr.Zero;
         }
-        _gpuCounters = null;
     }
 
     public void Dispose()
     {
         lock (_gpuLock)
         {
-            DisposeGpuCounters();
+            DisposeGpu();
         }
     }
 }

@@ -366,7 +366,7 @@ public sealed class WidgetWindow : Window
             {
                 _fastTimer = new DispatcherTimer(DispatcherPriority.Render)
                 {
-                    Interval = TimeSpan.FromMilliseconds(33),
+                    Interval = TimeSpan.FromMilliseconds(50), // 20 fps: smooth sweep, a third less render cost
                 };
                 _fastTimer.Tick += (_, _) => _canvas.Now = DateTime.Now;
             }

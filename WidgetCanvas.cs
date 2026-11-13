@@ -36,13 +36,31 @@ public sealed class WidgetCanvas : FrameworkElement
     public DateTime Now
     {
         get => _now;
-        set { _now = value; InvalidateVisual(); }
+        set
+        {
+            // Skip redraws when the displayed text would not change (date: once a day,
+            // digital clock: once a second) instead of invalidating on every tick.
+            if (Kind == WidgetKind.Date &&
+                value.ToString("d MMMM yyyy dddd", CultureInfo.CurrentCulture) == _now.ToString("d MMMM yyyy dddd", CultureInfo.CurrentCulture))
+                return;
+            if (Kind == WidgetKind.Clock && ClockMode == ClockMode.Digital &&
+                value.ToString("HH:mm:ss", CultureInfo.CurrentCulture) == _now.ToString("HH:mm:ss", CultureInfo.CurrentCulture))
+                return;
+            _now = value;
+            InvalidateVisual();
+        }
     }
 
     public StatsSnapshot? Stats
     {
         get => _stats;
-        set { _stats = value; InvalidateVisual(); }
+        set
+        {
+            if (Equals(_stats, value))
+                return; // identical sample: nothing to redraw
+            _stats = value;
+            InvalidateVisual();
+        }
     }
 
     private string? _drive;

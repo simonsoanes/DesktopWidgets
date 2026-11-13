@@ -95,4 +95,38 @@ internal static class Native
     }
 
     public const int WM_DISPLAYCHANGE = 0x007E;
+
+    // ---- PDH (GPU utilisation): one wildcard query, one collect per sample ----
+
+    public const uint PDH_FMT_DOUBLE = 0x200;
+    public const uint PDH_MORE_DATA = 0x800007D2;
+
+    [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
+    public static extern uint PdhOpenQuery(string? szDataSource, IntPtr dwUserData, out IntPtr phQuery);
+
+    [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
+    public static extern uint PdhAddEnglishCounterW(IntPtr hQuery, string szFullCounterPath, IntPtr dwUserData, out IntPtr phCounter);
+
+    [DllImport("pdh.dll")]
+    public static extern uint PdhCollectQueryData(IntPtr hQuery);
+
+    [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
+    public static extern uint PdhGetFormattedCounterArrayW(IntPtr hCounter, uint dwFormat, ref uint lpdwBufferSize, ref uint lpdwItemCount, IntPtr ItemBuffer);
+
+    [DllImport("pdh.dll")]
+    public static extern uint PdhCloseQuery(IntPtr hQuery);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct PDH_FMT_COUNTERVALUE
+    {
+        public uint CStatus;
+        public double dblValue;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct PDH_FMT_COUNTERVALUE_ITEM_W
+    {
+        public IntPtr szName;
+        public PDH_FMT_COUNTERVALUE FmtValue;
+    }
 }

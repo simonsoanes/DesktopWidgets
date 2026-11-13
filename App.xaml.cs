@@ -179,7 +179,16 @@ public partial class App : Application
         _sampling = true;
         try
         {
-            var snapshot = await Task.Run(() => _stats.Sample());
+            // Only sample what some live widget actually displays - a clock-only layout
+            // does no stats sampling at all.
+            var needs = new StatsNeeds(
+                _windows.Any(w => w.Config.Kind == WidgetKind.Cpu),
+                _windows.Any(w => w.Config.Kind == WidgetKind.Gpu),
+                _windows.Any(w => w.Config.Kind == WidgetKind.Memory),
+                _windows.Any(w => w.Config.Kind == WidgetKind.Disk));
+            StatsSnapshot? snapshot = null;
+            if (needs.Cpu || needs.Gpu || needs.Memory || needs.Disk)
+                snapshot = await Task.Run(() => _stats.Sample(needs));
             _lastStats = snapshot;
             var now = DateTime.Now;
             foreach (var window in _windows)
