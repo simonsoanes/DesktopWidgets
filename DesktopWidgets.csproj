@@ -1,0 +1,38 @@
+<!-- Copyright 2026 Simon Soanes / SPDX-License-Identifier: Apache-2.0 -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>DesktopWidgets</AssemblyName>
+    <RootNamespace>DesktopWidgets</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Version>1.0.0</Version>
+    <Authors>Simon Soanes</Authors>
+    <Copyright>Copyright 2026 Simon Soanes</Copyright>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/simonsoanes/DesktopWidgets</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/simonsoanes/DesktopWidgets</PackageProjectUrl>
+    <Product>Desktop Widgets</Product>
+    <AssemblyTitle>Desktop Widgets</AssemblyTitle>
+    <Description>Always-behind desktop widgets: clock, date, CPU, GPU and memory.</Description>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <!-- UseWindowsForms injects these implicit usings, which collide with WPF types.
+       TrayIcon.cs imports them explicitly, so remove them globally. -->
+  <ItemGroup>
+    <Using Remove="System.Drawing" />
+    <Using Remove="System.Windows.Forms" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="LICENSE" LogicalName="DesktopWidgets.LICENSE.txt" />
+  </ItemGroup>
+
+</Project>
