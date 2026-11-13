@@ -10,7 +10,7 @@ namespace DesktopWidgets;
 /// <summary>Small slider dialog for a custom widget opacity (15-100%).</summary>
 public sealed class OpacityDialog : Window
 {
-    public OpacityDialog(double current, Action<double> apply)
+    public OpacityDialog(double current, Action<double> apply, string title = "Custom opacity")
     {
         AboutWindow.ConfigureDialog(this, 320);
         InputBindings.Add(new KeyBinding(new RelayCommand(Close), Key.Escape, ModifierKeys.None));
@@ -19,7 +19,7 @@ public sealed class OpacityDialog : Window
 
         var header = new TextBlock
         {
-            Text = "Custom opacity",
+            Text = title,
             FontSize = 16,
             FontWeight = FontWeights.SemiBold,
             Foreground = WidgetChrome.TextBrush,

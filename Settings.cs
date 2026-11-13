@@ -16,7 +16,10 @@ public sealed class WidgetConfig
     public double Y { get; set; } = double.NaN;
     public double Width { get; set; }
     public double Height { get; set; }
+    /// <summary>Background (idle) opacity - what the widget fades to when not interacted with.</summary>
     public double Opacity { get; set; } = 0.95;
+    /// <summary>Foreground opacity while the mouse is over the widget, it is dragged, or its menu is open.</summary>
+    public double HoverOpacity { get; set; } = 1.0;
     /// <summary>Drive root for Disk widgets (e.g. "C:\\"); null means the system drive.</summary>
     public string? Drive { get; set; }
 }

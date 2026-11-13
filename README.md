@@ -26,8 +26,11 @@ notification area; that tray menu is the app's only chrome.
 - **Never lost** — a widget that ends up off every monitor (unplugged display, resolution
   change) is pulled back to the nearest one on drag-end, on display changes and at startup;
   tray → *Gather widgets on primary screen* rescues them all. Second-monitor widgets stay put.
+- **Fades when idle** — widgets rest at their background opacity and brighten to their
+  foreground opacity while the mouse is over them, they are dragged, or their menu is open.
 - **Right-click a widget** — switch a clock between Analog/Digital, pick the drive for a
-  Disk widget, set opacity (presets 100–25 % or a custom slider), reset its size, or close it.
+  Disk widget, set separate foreground (mouse-over) and background (idle) opacity — presets
+  100–25 % or a custom slider each — reset its size, or close it.
 - **Start with Windows** — tray menu toggle (per-user `Run` registry key).
 - **About** — tray menu → About Desktop Widgets: version, copyright and the full
   Apache-2.0 licence text (embedded, readable offline).

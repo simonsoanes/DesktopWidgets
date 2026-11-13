@@ -25,6 +25,7 @@ public sealed class WidgetWindow : Window
     private DispatcherTimer? _fastTimer;
     private bool _loaded;
     private bool _dragging;
+    private bool _menuOpen;
     private Native.POINT _dragStartCursor;
     private double _dragStartLeft;
     private double _dragStartTop;
@@ -55,6 +56,7 @@ public sealed class WidgetWindow : Window
         MinHeight = 70;
         Title = $"Desktop Widgets - {cfg.Kind}";
         Opacity = Math.Clamp(cfg.Opacity, 0.15, 1.0);
+        cfg.HoverOpacity = Math.Clamp(cfg.HoverOpacity, 0.15, 1.0);
 
         if (double.IsNaN(cfg.Width) || cfg.Width <= 0 || double.IsNaN(cfg.Height) || cfg.Height <= 0)
         {
@@ -97,8 +99,8 @@ public sealed class WidgetWindow : Window
 
         MouseLeftButtonDown += OnMouseLeftButtonDown;
         MouseRightButtonUp += OnMouseRightButtonUp;
-        MouseEnter += (_, _) => _grip.Opacity = 1.0;
-        MouseLeave += (_, _) => _grip.Opacity = 0.3;
+        MouseEnter += (_, _) => { _grip.Opacity = 1.0; ApplyOpacity(); };
+        MouseLeave += (_, _) => { _grip.Opacity = 0.3; ApplyOpacity(); };
         LocationChanged += (_, _) => SyncGeometry();
         SizeChanged += (_, _) => SyncGeometry();
         Loaded += (_, _) => { _loaded = true; UpdateClockTimer(); };
@@ -228,6 +230,7 @@ public sealed class WidgetWindow : Window
             ReleaseMouseCapture();
         EnsureGrabbable();
         Changed?.Invoke();
+        ApplyOpacity();
     }
 
     // ---- magnetic snapping ----------------------------------------------
@@ -414,17 +417,8 @@ public sealed class WidgetWindow : Window
         }
 
         var opacity = new MenuItem { Header = "Opacity" };
-        foreach (int pct in new[] { 100, 85, 70, 55, 40, 25 })
-        {
-            double value = pct / 100.0;
-            opacity.Items.Add(MakeChoice($"{pct}%", Math.Abs(_cfg.Opacity - value) < 0.01, () => SetOpacity(value)));
-        }
-        opacity.Items.Add(new Separator());
-        opacity.Items.Add(new MenuItem
-        {
-            Header = "Custom...",
-            Command = new RelayCommand(() => new OpacityDialog(_cfg.Opacity, SetOpacity).Show()),
-        });
+        opacity.Items.Add(BuildOpacityMenu("Foreground (mouse over)", () => _cfg.HoverOpacity, v => SetOpacity(v, true)));
+        opacity.Items.Add(BuildOpacityMenu("Background (idle)", () => _cfg.Opacity, v => SetOpacity(v, false)));
         menu.Items.Add(opacity);
 
         menu.Items.Add(new MenuItem
@@ -442,15 +436,50 @@ public sealed class WidgetWindow : Window
 
         menu.PlacementTarget = this;
         menu.Placement = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
+        _menuOpen = true;
+        menu.Closed += (_, _) => { _menuOpen = false; ApplyOpacity(); };
+        ApplyOpacity();
         menu.IsOpen = true;
     }
 
-    private void SetOpacity(double value)
+    private void SetOpacity(double value, bool foreground)
     {
         value = Math.Clamp(value, 0.15, 1.0);
-        _cfg.Opacity = value;
-        Opacity = value;
+        if (foreground)
+            _cfg.HoverOpacity = value;
+        else
+            _cfg.Opacity = value;
+        ApplyOpacity();
         Changed?.Invoke();
+    }
+
+    /// <summary>Fades between background (idle) and foreground (hover/drag/menu) opacity.</summary>
+    private void ApplyOpacity()
+    {
+        bool foreground = IsMouseOver || _dragging || _menuOpen;
+        double target = Math.Clamp(foreground ? _cfg.HoverOpacity : _cfg.Opacity, 0.15, 1.0);
+        if (Math.Abs(Opacity - target) < 0.001)
+            return;
+        BeginAnimation(OpacityProperty,
+            new System.Windows.Media.Animation.DoubleAnimation(target, TimeSpan.FromMilliseconds(120)));
+    }
+
+    private static MenuItem BuildOpacityMenu(string header, Func<double> current, Action<double> apply)
+    {
+        var menu = new MenuItem { Header = header };
+        foreach (int pct in new[] { 100, 85, 70, 55, 40, 25 })
+        {
+            double value = pct / 100.0;
+            menu.Items.Add(MakeChoice($"{pct}%", Math.Abs(current() - value) < 0.01, () => apply(value)));
+        }
+        menu.Items.Add(new Separator());
+        string title = header.StartsWith("Foreground") ? "Custom foreground opacity" : "Custom background opacity";
+        menu.Items.Add(new MenuItem
+        {
+            Header = "Custom...",
+            Command = new RelayCommand(() => new OpacityDialog(current(), apply, title).Show()),
+        });
+        return menu;
     }
 
     private void SetClockMode(ClockMode mode)
