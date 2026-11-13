@@ -26,9 +26,9 @@ public sealed class WidgetWindow : Window
     private bool _loaded;
     private bool _dragging;
     private bool _menuOpen;
+    private IntPtr _hwnd;
     private Native.POINT _dragStartCursor;
-    private double _dragStartLeft;
-    private double _dragStartTop;
+    private Native.RECT _dragStartRect;
 
     /// <summary>All live widget windows, so dragging can snap against the others.</summary>
     internal static readonly List<WidgetWindow> All = new();
@@ -57,6 +57,7 @@ public sealed class WidgetWindow : Window
         Title = $"Desktop Widgets - {cfg.Kind}";
         Opacity = Math.Clamp(cfg.Opacity, 0.15, 1.0);
         cfg.HoverOpacity = Math.Clamp(cfg.HoverOpacity, 0.15, 1.0);
+        cfg.ContentOpacity = Math.Clamp(cfg.ContentOpacity, 0.15, 1.0);
 
         if (double.IsNaN(cfg.Width) || cfg.Width <= 0 || double.IsNaN(cfg.Height) || cfg.Height <= 0)
         {
@@ -76,6 +77,7 @@ public sealed class WidgetWindow : Window
         cfg.Y = Top;
 
         _canvas = new WidgetCanvas { Kind = cfg.Kind, ClockMode = cfg.ClockMode, Drive = cfg.Drive ?? DefaultDrive };
+        _canvas.Opacity = Math.Clamp(cfg.ContentOpacity, 0.15, 1.0);
 
         _grip = new Thumb
         {
@@ -89,7 +91,7 @@ public sealed class WidgetWindow : Window
             Template = BuildGripTemplate(),
         };
         _grip.DragDelta += OnGripDrag;
-        _grip.DragCompleted += (_, _) => { EnsureGrabbable(); Changed?.Invoke(); };
+        _grip.DragCompleted += (_, _) => { SettlePosition(); Changed?.Invoke(); };
 
         var grid = new Grid();
         grid.Children.Add(_canvas);
@@ -139,6 +141,7 @@ public sealed class WidgetWindow : Window
         base.OnSourceInitialized(e);
 
         IntPtr hwnd = new WindowInteropHelper(this).Handle;
+        _hwnd = hwnd;
         HwndSource.FromHwnd(hwnd)?.AddHook(WndProc);
 
         int exStyle = Native.GetWindowLong(hwnd, Native.GWL_EXSTYLE);
@@ -163,7 +166,7 @@ public sealed class WidgetWindow : Window
             }
             case Native.WM_DISPLAYCHANGE:
                 // Monitor unplugged / resolution changed: never leave a widget unreachable.
-                EnsureGrabbable();
+                SettlePosition();
                 Changed?.Invoke();
                 break;
             case Native.WM_MOUSEACTIVATE:
@@ -189,8 +192,7 @@ public sealed class WidgetWindow : Window
         // Manual drag (not DragMove) so positions can be snapped while moving.
         _dragging = true;
         Native.GetCursorPos(out _dragStartCursor);
-        _dragStartLeft = Left;
-        _dragStartTop = Top;
+        Native.GetWindowRect(_hwnd, out _dragStartRect);
         CaptureMouse();
         e.Handled = true;
     }
@@ -201,12 +203,12 @@ public sealed class WidgetWindow : Window
         if (!_dragging)
             return;
         Native.GetCursorPos(out var cursor);
-        double scale = VisualTreeHelper.GetDpi(this).DpiScaleX;
-        double left = _dragStartLeft + (cursor.X - _dragStartCursor.X) / scale;
-        double top = _dragStartTop + (cursor.Y - _dragStartCursor.Y) / scale;
+        // Physical pixels end to end: cursor, window rects and monitor work areas share
+        // one coordinate space, so dragging and snapping behave identically at any DPI.
+        double left = _dragStartRect.Left + (cursor.X - _dragStartCursor.X);
+        double top = _dragStartRect.Top + (cursor.Y - _dragStartCursor.Y);
         SnapPosition(ref left, ref top);
-        Left = left;
-        Top = top;
+        MovePhysical(left, top);
     }
 
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
@@ -228,55 +230,64 @@ public sealed class WidgetWindow : Window
         _dragging = false;
         if (IsMouseCaptured)
             ReleaseMouseCapture();
-        EnsureGrabbable();
+        SettlePosition();
         Changed?.Invoke();
         ApplyOpacity();
     }
 
     // ---- magnetic snapping ----------------------------------------------
 
-    private const double SnapThreshold = 10;
-    private const double SnapGap = 8;
+    private const double SnapThresholdDip = 10;
+    private const double SnapGapDip = 8;
+    internal static readonly double[] SizeFactors = { 0.75, 1.0, 1.25, 1.5 };
 
-    /// <summary>Pulls a dragged position onto nearby widget edges, docks and screen edges.</summary>
+    /// <summary>Pulls a dragged position (physical px) onto nearby widget edges, docks and screen edges.</summary>
     private void SnapPosition(ref double left, ref double top)
     {
+        double scale = VisualTreeHelper.GetDpi(this).DpiScaleX;
+        double threshold = SnapThresholdDip * scale;
+        double gap = SnapGapDip * scale;
+        var rect = PhysicalRect();
+        double w = rect.Width, h = rect.Height;
+
         var xs = new List<double>();
         var ys = new List<double>();
         foreach (var other in All)
         {
             if (other == this)
                 continue;
-            xs.Add(other.Left);                               // left edges align
-            xs.Add(other.Left + other.Width - Width);         // right edges align
-            xs.Add(other.Left + other.Width / 2 - Width / 2); // centres align
-            xs.Add(other.Left + other.Width + SnapGap);       // dock to its right
-            xs.Add(other.Left - Width - SnapGap);             // dock to its left
-            ys.Add(other.Top);
-            ys.Add(other.Top + other.Height - Height);
-            ys.Add(other.Top + other.Height / 2 - Height / 2);
-            ys.Add(other.Top + other.Height + SnapGap);
-            ys.Add(other.Top - Height - SnapGap);
+            var o = other.PhysicalRect();
+            xs.Add(o.Left);                        // left edges align
+            xs.Add(o.Right - w);                   // right edges align
+            xs.Add(o.Left + o.Width / 2 - w / 2);  // centres align
+            xs.Add(o.Right + gap);                 // dock to its right
+            xs.Add(o.Left - w - gap);              // dock to its left
+            ys.Add(o.Top);
+            ys.Add(o.Bottom - h);
+            ys.Add(o.Top + o.Height / 2 - h / 2);
+            ys.Add(o.Bottom + gap);
+            ys.Add(o.Top - h - gap);
         }
-        foreach (var wa in WorkAreasDip())
+        foreach (var wa in WorkAreasPhysical())
         {
             xs.Add(wa.Left);
-            xs.Add(wa.Right - Width);
+            xs.Add(wa.Right - w);
             ys.Add(wa.Top);
-            ys.Add(wa.Bottom - Height);
+            ys.Add(wa.Bottom - h);
         }
-        left = SnapAxis(left, xs);
-        top = SnapAxis(top, ys);
+        left = SnapAxis(left, xs, threshold);
+        top = SnapAxis(top, ys, threshold);
+        ResolveOverlaps(ref left, ref top);
     }
 
-    private static double SnapAxis(double value, List<double> candidates)
+    private static double SnapAxis(double value, List<double> candidates, double threshold)
     {
         double best = value;
-        double bestDistance = SnapThreshold + 1;
+        double bestDistance = threshold + 1;
         foreach (double candidate in candidates)
         {
             double distance = Math.Abs(candidate - value);
-            if (distance <= SnapThreshold && distance < bestDistance)
+            if (distance <= threshold && distance < bestDistance)
             {
                 bestDistance = distance;
                 best = candidate;
@@ -285,22 +296,70 @@ public sealed class WidgetWindow : Window
         return best;
     }
 
-    // ---- off-screen safety ----------------------------------------------
-
-    /// <summary>Work areas of every connected monitor, in WPF device-independent units.</summary>
-    private List<Rect> WorkAreasDip()
+    /// <summary>
+    /// Cards are solid, border included: push the position out of any other widget along
+    /// the axis of least penetration, so snapping or dragging can never overlap them.
+    /// </summary>
+    private void ResolveOverlaps(ref double left, ref double top)
     {
-        double scale = VisualTreeHelper.GetDpi(this).DpiScaleX;
+        var rect = PhysicalRect();
+        double w = rect.Width, h = rect.Height;
+        for (int pass = 0; pass < 2; pass++)
+        {
+            foreach (var other in All)
+            {
+                if (other == this)
+                    continue;
+                var o = other.PhysicalRect();
+                bool overlaps = left < o.Right && o.Left < left + w && top < o.Bottom && o.Top < top + h;
+                if (!overlaps)
+                    continue;
+                double pushLeft = o.Left - w - left;
+                double pushRight = o.Right - left;
+                double pushUp = o.Top - h - top;
+                double pushDown = o.Bottom - top;
+                double minX = Math.Abs(pushLeft) < Math.Abs(pushRight) ? pushLeft : pushRight;
+                double minY = Math.Abs(pushUp) < Math.Abs(pushDown) ? pushUp : pushDown;
+                if (Math.Abs(minX) < Math.Abs(minY))
+                    left += minX;
+                else
+                    top += minY;
+            }
+        }
+    }
+
+    // ---- physical-pixel geometry (DPI-proof) -----------------------------
+
+    private Rect PhysicalRect()
+    {
+        Native.GetWindowRect(_hwnd, out var r);
+        return new Rect(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top);
+    }
+
+    private void MovePhysical(double left, double top)
+    {
+        Native.SetWindowPos(_hwnd, IntPtr.Zero, (int)Math.Round(left), (int)Math.Round(top), 0, 0,
+            Native.SWP_NOSIZE | Native.SWP_NOZORDER | Native.SWP_NOACTIVATE);
+    }
+
+    /// <summary>Work areas of every connected monitor, in physical pixels.</summary>
+    private static List<Rect> WorkAreasPhysical()
+    {
         var areas = new List<Rect>();
         foreach (var screen in System.Windows.Forms.Screen.AllScreens)
         {
             var wa = screen.WorkingArea;
-            areas.Add(new Rect(wa.Left / scale, wa.Top / scale, wa.Width / scale, wa.Height / scale));
+            areas.Add(new Rect(wa.Left, wa.Top, wa.Width, wa.Height));
         }
         if (areas.Count == 0)
-            areas.Add(SystemParameters.WorkArea);
+        {
+            var wa = System.Windows.Forms.Screen.PrimaryScreen?.WorkingArea ?? new System.Drawing.Rectangle(0, 0, 1920, 1080);
+            areas.Add(new Rect(wa.Left, wa.Top, wa.Width, wa.Height));
+        }
         return areas;
     }
+
+    // ---- off-screen safety ----------------------------------------------
 
     /// <summary>
     /// A widget must always stay grabbable: if it no longer overlaps any connected
@@ -309,12 +368,13 @@ public sealed class WidgetWindow : Window
     /// </summary>
     public void EnsureGrabbable()
     {
-        var rect = new Rect(Left, Top, Width, Height);
-        var areas = WorkAreasDip();
+        double scale = VisualTreeHelper.GetDpi(this).DpiScaleX;
+        var rect = PhysicalRect();
+        var areas = WorkAreasPhysical();
         foreach (var wa in areas)
         {
             var overlap = Rect.Intersect(rect, wa);
-            if (overlap.Width >= 48 && overlap.Height >= 32)
+            if (overlap.Width >= 48 * scale && overlap.Height >= 32 * scale)
                 return; // still reachable on some monitor
         }
 
@@ -335,18 +395,57 @@ public sealed class WidgetWindow : Window
     }
 
     /// <summary>Tray rescue: bring this widget back onto the primary screen.</summary>
-    public void GatherToPrimary() => ClampInto(SystemParameters.WorkArea);
+    public void GatherToPrimary()
+    {
+        var wa = System.Windows.Forms.Screen.PrimaryScreen?.WorkingArea ?? new System.Drawing.Rectangle(0, 0, 1920, 1080);
+        ClampInto(new Rect(wa.Left, wa.Top, wa.Width, wa.Height));
+    }
 
     private void ClampInto(Rect wa)
     {
-        Left = Math.Clamp(Left, wa.Left, Math.Max(wa.Left, wa.Right - Width));
-        Top = Math.Clamp(Top, wa.Top, Math.Max(wa.Top, wa.Bottom - Height));
+        var rect = PhysicalRect();
+        double left = Math.Clamp(rect.Left, wa.Left, Math.Max(wa.Left, wa.Right - rect.Width));
+        double top = Math.Clamp(rect.Top, wa.Top, Math.Max(wa.Top, wa.Bottom - rect.Height));
+        MovePhysical(left, top);
+    }
+
+    /// <summary>Off-screen clamp + overlap push-out after a drag, resize or display change.</summary>
+    private void SettlePosition()
+    {
+        EnsureGrabbable();
+        var rect = PhysicalRect();
+        double left = rect.Left, top = rect.Top;
+        ResolveOverlaps(ref left, ref top);
+        MovePhysical(left, top);
     }
 
     private void OnGripDrag(object sender, DragDeltaEventArgs e)
     {
-        Width = Math.Max(MinWidth, Width + e.HorizontalChange);
-        Height = Math.Max(MinHeight, Height + e.VerticalChange);
+        double w = Math.Max(MinWidth, Width + e.HorizontalChange);
+        double h = Math.Max(MinHeight, Height + e.VerticalChange);
+        if (_cfg.SnapSizes)
+        {
+            w = SnapAxis(w, SizeCandidates(true), 8);
+            h = SnapAxis(h, SizeCandidates(false), 8);
+        }
+        Width = w;
+        Height = h;
+    }
+
+    private List<double> SizeCandidates(bool width)
+    {
+        var list = new List<double>();
+        foreach (var other in All)
+        {
+            if (other != this)
+                list.Add(width ? other.Width : other.Height);
+        }
+        foreach (double factor in SizeFactors)
+        {
+            var preset = PresetSize(_cfg.Kind, _cfg.ClockMode, factor);
+            list.Add(width ? preset.Width : preset.Height);
+        }
+        return list;
     }
 
     private void SyncGeometry()
@@ -419,18 +518,23 @@ public sealed class WidgetWindow : Window
         var opacity = new MenuItem { Header = "Opacity" };
         opacity.Items.Add(BuildOpacityMenu("Foreground (mouse over)", () => _cfg.HoverOpacity, v => SetOpacity(v, true)));
         opacity.Items.Add(BuildOpacityMenu("Background (idle)", () => _cfg.Opacity, v => SetOpacity(v, false)));
+        opacity.Items.Add(BuildOpacityMenu("Content (digits/hands)", () => _cfg.ContentOpacity, SetContentOpacity));
         menu.Items.Add(opacity);
 
-        menu.Items.Add(new MenuItem
+        var sizes = new MenuItem { Header = "Size" };
+        foreach (var (label, factor) in new[] { ("Small (75%)", 0.75), ("Default (100%)", 1.0), ("Large (125%)", 1.25), ("Extra large (150%)", 1.5) })
         {
-            Header = "Reset size",
-            Command = new RelayCommand(() =>
-            {
-                var def = DefaultSize(_cfg.Kind, _cfg.ClockMode);
-                Width = def.Width;
-                Height = def.Height;
-            }),
-        });
+            var target = PresetSize(_cfg.Kind, _cfg.ClockMode, factor);
+            sizes.Items.Add(MakeChoice(label,
+                Math.Abs(Width - target.Width) < 1 && Math.Abs(Height - target.Height) < 1,
+                () => ApplySize(target)));
+        }
+        menu.Items.Add(sizes);
+        menu.Items.Add(MakeChoice("Snap sizes while resizing", _cfg.SnapSizes, () =>
+        {
+            _cfg.SnapSizes = !_cfg.SnapSizes;
+            Changed?.Invoke();
+        }));
         menu.Items.Add(new Separator());
         menu.Items.Add(new MenuItem { Header = "Close widget", Command = new RelayCommand(() => { RemoveRequested?.Invoke(); Close(); }) });
 
@@ -440,6 +544,28 @@ public sealed class WidgetWindow : Window
         menu.Closed += (_, _) => { _menuOpen = false; ApplyOpacity(); };
         ApplyOpacity();
         menu.IsOpen = true;
+    }
+
+    private void SetContentOpacity(double value)
+    {
+        value = Math.Clamp(value, 0.15, 1.0);
+        _cfg.ContentOpacity = value;
+        _canvas.Opacity = value;
+        Changed?.Invoke();
+    }
+
+    private void ApplySize(Size size)
+    {
+        Width = Math.Max(MinWidth, size.Width);
+        Height = Math.Max(MinHeight, size.Height);
+        SettlePosition();
+        Changed?.Invoke();
+    }
+
+    internal static Size PresetSize(WidgetKind kind, ClockMode mode, double factor)
+    {
+        var def = DefaultSize(kind, mode);
+        return new Size(def.Width * factor, def.Height * factor);
     }
 
     private void SetOpacity(double value, bool foreground)
@@ -473,7 +599,9 @@ public sealed class WidgetWindow : Window
             menu.Items.Add(MakeChoice($"{pct}%", Math.Abs(current() - value) < 0.01, () => apply(value)));
         }
         menu.Items.Add(new Separator());
-        string title = header.StartsWith("Foreground") ? "Custom foreground opacity" : "Custom background opacity";
+        string title = header.StartsWith("Foreground") ? "Custom foreground opacity"
+            : header.StartsWith("Background") ? "Custom background opacity"
+            : "Custom content opacity";
         menu.Items.Add(new MenuItem
         {
             Header = "Custom...",

@@ -11,6 +11,7 @@ Project home: <https://github.com/simonsoanes/DesktopWidgets>
 ![date](docs/images/date.png)
 ![memory gauge](docs/images/memory.png)
 ![disk gauge](docs/images/disk.png)
+![analog clock with content opacity 35%](docs/images/content-faded.png)
 
 ## Using it
 
@@ -20,7 +21,9 @@ notification area; that tray menu is the app's only chrome.
 - **Add widget** — Clock (digital), Clock (analog), Date, CPU usage, GPU usage, Memory usage,
   Disk space (any fixed/removable drive).
 - **Move** — drag with the left mouse button. Widgets magnetically snap to each other's
-  edges, centres and docks (8 px gap) and to screen edges (10 px threshold).
+  edges, centres and docks (8 px gap) and to screen edges (10 px threshold). Snapped and
+  dragged positions never overlap another widget - collisions resolve border-to-border -
+  and all snapping geometry is in physical pixels, identical at any DPI scaling.
 - **Resize** — drag the grip in the widget's bottom-right corner (appears on hover).
   Everything is vector-drawn, so it stays crisp at any size.
 - **Never lost** — a widget that ends up off every monitor (unplugged display, resolution
@@ -29,8 +32,8 @@ notification area; that tray menu is the app's only chrome.
 - **Fades when idle** — widgets rest at their background opacity and brighten to their
   foreground opacity while the mouse is over them, they are dragged, or their menu is open.
 - **Right-click a widget** — switch a clock between Analog/Digital, pick the drive for a
-  Disk widget, set separate foreground (mouse-over) and background (idle) opacity — presets
-  100–25 % or a custom slider each — reset its size, or close it.
+  Disk widget, set foreground (mouse-over), background (idle) and content (digits/hands)
+  opacity — presets 100–25 % or a custom slider each — reset its size, or close it.
 - **Start with Windows** — tray menu toggle (per-user `Run` registry key).
 - **About** — tray menu → About Desktop Widgets: version, copyright and the full
   Apache-2.0 licence text (embedded, readable offline).

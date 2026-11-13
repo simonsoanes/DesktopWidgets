@@ -20,6 +20,10 @@ public sealed class WidgetConfig
     public double Opacity { get; set; } = 0.95;
     /// <summary>Foreground opacity while the mouse is over the widget, it is dragged, or its menu is open.</summary>
     public double HoverOpacity { get; set; } = 1.0;
+    /// <summary>Opacity of the drawn content (digits, hands, gauges) only - the card keeps its own opacity.</summary>
+    public double ContentOpacity { get; set; } = 1.0;
+    /// <summary>While grip-resizing, snap width/height to other widgets' sizes and the size presets.</summary>
+    public bool SnapSizes { get; set; } = true;
     /// <summary>Drive root for Disk widgets (e.g. "C:\\"); null means the system drive.</summary>
     public string? Drive { get; set; }
 }

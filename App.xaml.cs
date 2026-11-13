@@ -286,6 +286,7 @@ public partial class App : Application
             RenderPreview(dir, "gpu.png", WidgetKind.Gpu, ClockMode.Digital, 200, 200, now, snapshot);
             RenderPreview(dir, "memory.png", WidgetKind.Memory, ClockMode.Digital, 200, 200, now, snapshot);
             RenderPreview(dir, "disk.png", WidgetKind.Disk, ClockMode.Digital, 200, 200, now, snapshot, WidgetWindow.DefaultDrive);
+            RenderPreview(dir, "content-faded.png", WidgetKind.Clock, ClockMode.Analog, 240, 240, now, snapshot, null, 0.35);
             RenderAboutPreview(dir);
         }
         catch (Exception ex)
@@ -325,9 +326,9 @@ public partial class App : Application
     }
 
     private static void RenderPreview(string dir, string file, WidgetKind kind, ClockMode mode,
-        int w, int h, DateTime now, StatsSnapshot snapshot, string? drive = null)
+        int w, int h, DateTime now, StatsSnapshot snapshot, string? drive = null, double contentOpacity = 1.0)
     {
-        var canvas = new WidgetCanvas { Kind = kind, ClockMode = mode, Now = now, Stats = snapshot, Drive = drive };
+        var canvas = new WidgetCanvas { Kind = kind, ClockMode = mode, Now = now, Stats = snapshot, Drive = drive, Opacity = contentOpacity };
         var card = WidgetChrome.CreateCard(canvas);
         card.Width = w;
         card.Height = h;
